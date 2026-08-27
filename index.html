@@ -1,60 +1,352 @@
-<!DOCTYPE html>
-<html>
-<head>
-  <!--
-    If you are serving your web app in a path other than the root, change the
-    href value below to reflect the base path you are serving from.
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TrailGuide Designer</title>
+    <style>
+      html, body, #map { margin: 0; padding: 0; width: 100%; height: 100%; }
+      #app { width: 100%; height: 100%; font-family: system-ui, sans-serif; display: flex; flex-direction: column; }
+      #map-area { position: relative; flex: 1; min-height: 0; }
+      #map-area #map { position: absolute; inset: 0; }
 
-    The path provided below has to start and end with a slash "/" in order for
-    it to work correctly.
+      #topbar {
+        background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+        font-size: 14px; position: relative; z-index: 4;
+        /* `zoom` (unlike `transform: scale`) actually reflows layout, so
+           #map-area below correctly starts after the toolbar's real
+           rendered height instead of overlapping it — a plain scale
+           transform grows the toolbar's *visual* size while its reserved
+           flex-layout footprint stays at the unscaled size, so a larger
+           toolbar bled down over the map's own zoom/compass control. */
+        zoom: var(--ui-scale, 1);
+      }
+      /* The map's own zoom (+/-) and compass control scales with the same
+         toolbar-size setting, since it's effectively part of the toolbar. */
+      .maplibregl-ctrl-top-right {
+        zoom: var(--ui-scale, 1);
+      }
+      #topbar-row1, #topbar-row2 {
+        display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+        padding: 6px 10px;
+      }
+      #topbar-row2 { border-top: 1px solid #eee; }
+      #topbar button, #topbar label.file-btn {
+        border: 1px solid #ccc; background: #f5f5f5; border-radius: 6px;
+        padding: 6px 10px; cursor: pointer; font-size: 13px; white-space: nowrap;
+      }
+      #topbar button.active { background: #1565C0; color: #fff; border-color: #1565C0; }
+      #topbar button:disabled { opacity: 0.5; cursor: default; }
+      #topbar label.checkbox { display: flex; align-items: center; gap: 6px; user-select: none; font-size: 13px; white-space: nowrap; }
+      #topbar .spacer { flex: 1; }
+      #trail-name {
+        font-weight: 600; padding: 6px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+      }
+      #trail-name:hover { background: #f0f0f0; }
+      #color-swatch-btn { width: 32px; height: 32px; padding: 0; border-radius: 50%; overflow: hidden; }
+      #color-swatch { display: block; width: 100%; height: 100%; }
+      label.file-btn input[type="file"] { display: none; }
 
-    For more details:
-    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+      .menu-wrap { position: relative; }
+      .dropdown-menu {
+        display: none; position: absolute; top: calc(100% + 4px); left: 0; z-index: 5;
+        background: #fff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        min-width: 190px; padding: 4px; flex-direction: column;
+      }
+      .dropdown-menu.show { display: flex; }
+      .dropdown-menu button {
+        border: none; background: none; text-align: left; padding: 8px 10px;
+        border-radius: 6px; font-size: 13px; cursor: pointer;
+      }
+      .dropdown-menu button:hover { background: #f0f0f0; }
 
-    This is a placeholder for base href that will be replaced by the value of
-    the `--base-href` argument provided to `flutter build`.
-  -->
-  <base href="/TrailApps-map-route-tool/">
+      #search-wrap { position: relative; }
+      #search-input {
+        border: 1px solid #ccc; border-radius: 6px; padding: 6px 24px 6px 8px; font: inherit;
+        width: 200px; box-sizing: border-box;
+      }
+      #search-clear {
+        position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+        border: none; background: none; cursor: pointer; font-size: 16px; line-height: 1;
+        color: #888; padding: 4px 6px; border-radius: 4px;
+      }
+      #search-clear:hover { background: #eee; color: #333; }
+      #search-results {
+        display: none; position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 5;
+        background: #fff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+        max-height: 260px; overflow-y: auto;
+      }
+      #search-results.show { display: block; }
+      .search-result { padding: 8px 10px; cursor: pointer; font-size: 13px; border-bottom: 1px solid #f0f0f0; }
+      .search-result:last-child { border-bottom: none; }
+      .search-result:hover { background: #f0f0f0; }
 
-  <meta charset="UTF-8">
-  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
-  <!-- Without this, mobile browsers render at a fixed ~980px virtual
-       viewport and scale the whole page down to fit, instead of reflowing
-       at the device's real width — confirmed live (2026-08-23) as part of
-       why this desktop-focused app was unusable on a phone browser. -->
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      #tool-hint { color: #666; font-size: 12px; }
+      #status-line { color: #444; font-size: 12px; font-weight: 500; white-space: nowrap; }
 
-  <!-- iOS meta tags & icons -->
-  <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="trailguide">
-  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+      #toast {
+        position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+        background: rgba(20,20,20,0.85); color: #fff; padding: 8px 14px;
+        border-radius: 6px; font-size: 13px; z-index: 2;
+        opacity: 0; pointer-events: none; transition: opacity 0.2s;
+      }
+      #toast.show { opacity: 1; }
 
-  <!-- Favicon -->
-  <link rel="icon" type="image/png" href="favicon.png"/>
+      .modal-backdrop {
+        position: absolute; inset: 0; z-index: 10;
+        background: rgba(0,0,0,0.35);
+        display: none; align-items: center; justify-content: center;
+      }
+      .modal-backdrop.show { display: flex; }
+      .modal {
+        background: #fff; border-radius: 10px; padding: 18px 20px;
+        width: 420px; max-width: calc(100% - 32px);
+        max-height: calc(100% - 32px); overflow-y: auto;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        font-family: system-ui, sans-serif; font-size: 14px;
+      }
+      .modal h3 { margin: 0 0 12px; }
+      .modal label.field { display: block; margin-bottom: 12px; font-weight: 500; }
+      .modal label.field input[type="text"],
+      .modal label.field input[type="number"],
+      .modal label.field textarea {
+        display: block; width: 100%; margin-top: 4px; padding: 6px 8px;
+        border: 1px solid #ccc; border-radius: 6px; font: inherit; box-sizing: border-box;
+      }
+      .modal .field-hint { font-weight: normal; color: #666; font-size: 12px; display: block; margin-top: 2px; }
+      .modal input[type="range"] { width: 100%; }
+      #cue-type-picker { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+      .cue-type-chip {
+        border: 2px solid var(--chip-color, #ccc); background: #fff; color: #333;
+        border-radius: 16px; padding: 4px 10px; font-size: 12px; cursor: pointer;
+      }
+      .cue-type-chip.active { background: var(--chip-color, #1565C0); color: #fff; }
+      .modal-actions { display: flex; align-items: center; gap: 8px; margin-top: 4px; }
+      .modal-actions button { border: 1px solid #ccc; background: #f5f5f5; border-radius: 6px; padding: 7px 14px; cursor: pointer; }
+      .modal-actions .danger { color: #C62828; border-color: #C62828; background: #fff; }
+      .modal-actions .primary { background: #1565C0; color: #fff; border-color: #1565C0; }
+      .modal-actions .spacer { flex: 1; }
 
-  <title>trailguide</title>
-  <link rel="manifest" href="manifest.json">
+      .cue-list-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid #eee; }
+      .cue-list-badge {
+        width: 26px; height: 26px; border-radius: 50%; color: #fff;
+        display: flex; align-items: center; justify-content: center; font-size: 12px; flex-shrink: 0;
+      }
+      .cue-list-text { flex: 1; min-width: 0; }
+      .cue-list-text .type { color: #666; font-size: 12px; }
 
-  <!-- Required by maplibre_gl_web — it's a JS-interop wrapper around the
-       real MapLibre GL JS library, which isn't bundled by the plugin itself
-       and has to be loaded here manually (see maplibre_gl's own README,
-       "Web" setup section). Without this, MapLibreMap's Flutter widget
-       renders fine but the actual map surface stays blank — there's no
-       `maplibregl` global for the plugin to drive. -->
-  <script src='https://unpkg.com/maplibre-gl@^5.24.0/dist/maplibre-gl.js'></script>
-  <link href='https://unpkg.com/maplibre-gl@^5.24.0/dist/maplibre-gl.css' rel='stylesheet'/>
-</head>
-<body>
-  <!--
-    You can customize the "flutter_bootstrap.js" script.
-    This is useful to provide a custom configuration to the Flutter loader
-    or to give the user feedback during the initialization process.
+      .chip-group { display: flex; gap: 6px; margin-bottom: 16px; }
+      .chip-group button {
+        flex: 1; border: 1px solid #ccc; background: #fff; color: #333;
+        border-radius: 8px; padding: 8px 6px; font-size: 13px; cursor: pointer;
+      }
+      .chip-group button.active { background: #1565C0; color: #fff; border-color: #1565C0; }
+      .field-row { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
+      .field-row .value { font-weight: bold; font-size: 16px; }
+      .field-title { font-weight: 500; margin: 12px 0 8px; }
+      .modal p.desc { color: #555; margin: 0 0 16px; }
 
-    For more details:
-    * https://docs.flutter.dev/platform-integration/web/initialization
-  -->
-  <script src="flutter_bootstrap.js" async></script>
-</body>
+      .color-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 8px; }
+      .color-swatch-btn {
+        width: 36px; height: 36px; border-radius: 50%; border: 3px solid transparent;
+        cursor: pointer; padding: 0;
+      }
+      .color-swatch-btn.selected { border-color: #222; }
+
+      .switch-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+      .switch-row .label { font-weight: 500; }
+      .switch-row .sub { font-weight: normal; color: #666; font-size: 12px; }
+      .switch-row.disabled { opacity: 0.5; }
+    </style>
+    <script type="module" crossorigin src="/TrailApps-map-route-tool/assets/index-C4dnoGGw.js"></script>
+    <link rel="stylesheet" crossorigin href="/TrailApps-map-route-tool/assets/index-B2k4QVOw.css">
+  </head>
+  <body>
+    <div id="app">
+      <div id="topbar">
+        <div id="topbar-row1">
+          <span id="trail-name" title="Click to rename">New trail</span>
+          <button id="btn-newtrail" title="New trail">New</button>
+          <label class="file-btn" title="Open .trail file">Open<input id="file-input" type="file" accept=".trail" /></label>
+          <button id="btn-export" title="Save as .trail file">Save</button>
+          <button id="btn-undo" title="Undo" disabled>Undo</button>
+          <button id="color-swatch-btn" title="Trail colour"><span id="color-swatch"></span></button>
+          <div class="menu-wrap">
+            <button id="btn-more" title="More">More ▾</button>
+            <div class="dropdown-menu" id="more-menu">
+              <button id="menu-clear-path">Clear path</button>
+              <button id="menu-clear-cues">Clear all cues</button>
+              <button id="menu-clear-all">Clear everything</button>
+              <button id="menu-clear-boundary" style="display:none">Clear generation boundary</button>
+            </div>
+          </div>
+          <div id="search-wrap">
+            <input type="text" id="search-input" placeholder="Search streets, places…" autocomplete="off" />
+            <button type="button" id="search-clear" title="Clear search" style="display:none">&times;</button>
+            <div id="search-results"></div>
+          </div>
+          <button id="btn-cue-list">Cues</button>
+          <button id="btn-generate">Auto-generate…</button>
+          <span class="spacer"></span>
+          <label class="checkbox"><input type="checkbox" id="chk-follow" checked /> Follow trails</label>
+          <button id="btn-display-size" title="Display size">Display size</button>
+        </div>
+        <div id="topbar-row2">
+          <button id="tool-draw" class="active">Draw</button>
+          <button id="tool-move">Move</button>
+          <button id="tool-delete">Delete</button>
+          <button id="tool-freehand">Freehand</button>
+          <button id="tool-adjust">Adjust</button>
+          <button id="tool-boundary">Boundary</button>
+          <button id="tool-addcue">Add cue</button>
+          <span id="boundary-actions" style="display:none">
+            <button id="btn-finish-boundary">Finish boundary</button>
+            <button id="btn-cancel-boundary">Cancel</button>
+          </span>
+          <span id="tool-hint">Click the map to add a point.</span>
+          <span class="spacer"></span>
+          <span id="status-line"></span>
+        </div>
+      </div>
+
+      <div id="map-area">
+        <div id="map"></div>
+        <div id="toast"></div>
+      </div>
+
+      <div class="modal-backdrop" id="cue-modal-backdrop">
+        <div class="modal">
+          <h3 id="cue-modal-title">New cue</h3>
+          <label class="field">Position in list (1 = first)
+            <input type="number" id="cue-order" min="1" />
+            <span class="field-hint" id="cue-order-hint"></span>
+          </label>
+          <div id="cue-type-picker"></div>
+          <label class="field">Map label (short)
+            <input type="text" id="cue-label" />
+          </label>
+          <label class="field">Spoken direction (read aloud)
+            <textarea id="cue-spoken" rows="2"></textarea>
+          </label>
+          <label class="field">Trigger distance: <span id="cue-radius-value">25</span> m
+            <input type="range" id="cue-radius" min="10" max="60" step="5" />
+          </label>
+          <div class="modal-actions">
+            <button class="danger" id="cue-delete" style="display:none">Delete</button>
+            <button id="cue-add-another" style="display:none">Add another here</button>
+            <span class="spacer"></span>
+            <button id="cue-cancel">Cancel</button>
+            <button class="primary" id="cue-save">Save cue</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-backdrop" id="cue-list-backdrop">
+        <div class="modal">
+          <h3>Cues</h3>
+          <div id="cue-list-body"></div>
+          <div class="modal-actions">
+            <span class="spacer"></span>
+            <button id="cue-list-close">Close</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-backdrop" id="gen-modal-backdrop">
+        <div class="modal">
+          <h3>Auto-generate a trail</h3>
+          <p class="desc" id="gen-desc">Builds a route from the trails shown on screen now.</p>
+          <div class="field-row"><span class="field-title" style="margin:0">Length</span><span class="value" id="gen-length-value">4.0 km</span></div>
+          <input type="range" id="gen-length" min="500" max="15000" step="250" value="4000" />
+          <div class="field-title">Shape</div>
+          <div class="chip-group" id="gen-shape-picker">
+            <button type="button" data-value="loop" class="active">Loop</button>
+            <button type="button" data-value="outback">There &amp; back</button>
+          </div>
+          <div class="field-title">Surface</div>
+          <div class="chip-group" id="gen-surface-picker">
+            <button type="button" data-value="trails">Trails</button>
+            <button type="button" data-value="mixed" class="active">Mixed</button>
+            <button type="button" data-value="roads">Roads</button>
+          </div>
+          <div class="modal-actions">
+            <span class="spacer"></span>
+            <button id="gen-cancel">Cancel</button>
+            <button class="primary" id="gen-generate">Generate</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-backdrop" id="color-modal-backdrop">
+        <div class="modal">
+          <h3>Trail colour</h3>
+          <div class="color-grid" id="color-grid"></div>
+          <div class="modal-actions">
+            <span class="spacer"></span>
+            <button id="color-close">Close</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-backdrop" id="confirm-modal-backdrop">
+        <div class="modal" style="width:340px">
+          <p class="desc" id="confirm-message" style="margin-bottom:18px"></p>
+          <div class="modal-actions">
+            <span class="spacer"></span>
+            <button id="confirm-cancel">Cancel</button>
+            <button class="primary" id="confirm-ok">OK</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-backdrop" id="rename-modal-backdrop">
+        <div class="modal">
+          <h3>Rename trail</h3>
+          <label class="field">Name
+            <input type="text" id="rename-input" placeholder="e.g. River Loop" />
+          </label>
+          <div class="modal-actions">
+            <span class="spacer"></span>
+            <button id="rename-cancel">Cancel</button>
+            <button class="primary" id="rename-save">Save</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-backdrop" id="display-modal-backdrop">
+        <div class="modal">
+          <h3>Display size</h3>
+          <div class="field-row"><span class="field-title" style="margin:0">Toolbar &amp; text size</span><span class="value" id="ui-scale-value">100%</span></div>
+          <input type="range" id="ui-scale" min="0.85" max="1.75" step="0.05" />
+          <div class="switch-row" style="margin-top:16px">
+            <div>
+              <div class="label">Show trail direction arrows</div>
+            </div>
+            <input type="checkbox" id="chevron-visible" />
+          </div>
+          <div class="switch-row" id="chevron-scale-row">
+            <span class="field-title" style="margin:0">Arrow size</span>
+            <span class="value" id="chevron-scale-value">100%</span>
+          </div>
+          <input type="range" id="chevron-scale" min="0.1" max="1.5" step="0.05" />
+          <div class="switch-row" style="margin-top:16px">
+            <span class="field-title" style="margin:0">Anchor &amp; cue number size</span>
+            <span class="value" id="marker-label-scale-value">100%</span>
+          </div>
+          <input type="range" id="marker-label-scale" min="0.5" max="2" step="0.1" />
+          <div class="switch-row" style="margin-top:16px">
+            <div>
+              <div class="label">Distance units</div>
+              <div class="sub" id="units-sub">Kilometres</div>
+            </div>
+            <input type="checkbox" id="units-metric" />
+          </div>
+          <div class="modal-actions">
+            <span class="spacer"></span>
+            <button id="display-close">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
 </html>
